@@ -6,3 +6,5 @@ input,select,textarea{font-size:16px}
 select{background:#0c2029;border:1px solid #4c6874;color:#fff;padding:8px;border-radius:6px;max-width:100%}
 
 #liveOv{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}#liveOvInfo{font-size:13px;color:#7fe7cb;min-height:1.2em}
+
+#liveDiag{font-size:13px;color:#ffe08a;min-height:1.2em;margin:6px 0 0}
