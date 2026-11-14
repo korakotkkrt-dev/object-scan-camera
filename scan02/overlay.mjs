@@ -130,28 +130,55 @@ export function ringData(result) {
 
 // ---- the model drawn over the LIVE camera picture -----------------------------------------------------------------------------------------
 // canvas has the size the reconstruction used (camera.width x camera.height) and is laid over the <video> with the same object-fit, so both line up.
-// green = surface already in the model, orange = inside the object frame but not yet built -> walk there. Returns the share of the frame already built.
+// mode 'points'  : the 3D points of the model, in their photo colours (a point cloud on the live picture); cells inside the object frame that hold no point get an orange tint = scan there next
+// mode 'surface' : green = surface already in the model, orange = inside the object frame but not yet built
+// mode 'both'    : surface + points.  Returns the share of the object frame that is already covered.
 let liveCache = null;
-export function drawLive(canvas, result, pose, { roi = .88 } = {}) {
+export function drawLive(canvas, result, pose, { roi = .88, mode = 'points' } = {}) {
   const r = result.reconstruction, cam = r.camera, w = cam.width, h = cam.height;
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, w, h);
   if (!pose) return null;
-  const m = result.mesh, V = m.vertices, F = m.faces, n = V.length / 3;
-  if (!liveCache || liveCache.mesh !== m) liveCache = { mesh: m, px: new Float32Array(n * 2), pz: new Float32Array(n), a: document.createElement('canvas'), b: document.createElement('canvas') };
-  const { px, pz, a, b } = liveCache;
-  for (let i = 0; i < n; i++) { const q = project(pose, cam, [V[3 * i], V[3 * i + 1], V[3 * i + 2]]); px[2 * i] = q[0]; px[2 * i + 1] = q[1]; pz[i] = q[2]; }
-  a.width = b.width = w; a.height = b.height = h;
-  const tris = x => { x.beginPath(); for (let f = 0; f < F.length; f += 3) { const i = F[f], j = F[f + 1], k = F[f + 2]; if (pz[i] <= 0 || pz[j] <= 0 || pz[k] <= 0) continue; x.moveTo(px[2 * i], px[2 * i + 1]); x.lineTo(px[2 * j], px[2 * j + 1]); x.lineTo(px[2 * k], px[2 * k + 1]); x.closePath(); } x.fill(); };
+  const m = result.mesh, hasSurface = !!(m && m.faces && m.faces.length >= 60);
+  if (mode !== 'points' && !hasSurface) mode = 'points';
   const ix = w * (1 - roi) / 2, iy = h * (1 - roi) / 2, rw = w * roi, rh = h * roi;
-  const A = a.getContext('2d'); A.fillStyle = '#35e0a0'; tris(A);
-  const B = b.getContext('2d'); B.fillStyle = '#ff9a3d'; B.fillRect(ix, iy, rw, rh); B.globalCompositeOperation = 'destination-out'; B.fillStyle = '#000'; B.strokeStyle = '#000'; B.lineWidth = 2; tris(B); B.stroke(); B.globalCompositeOperation = 'source-over';
-  const sm = document.createElement('canvas'); sm.width = 96; sm.height = Math.max(1, Math.round(96 * h / w));
-  const sx = sm.getContext('2d', { willReadFrequently: true }); sx.drawImage(b, 0, 0, sm.width, sm.height);
-  const d = sx.getImageData(0, 0, sm.width, sm.height).data, x0 = Math.round(sm.width * (1 - roi) / 2), x1 = Math.round(sm.width * (1 + roi) / 2), y0 = Math.round(sm.height * (1 - roi) / 2), y1 = Math.round(sm.height * (1 + roi) / 2);
-  let tot = 0, miss = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { tot++; if (d[4 * (y * sm.width + x) + 3] > 100) miss++; }
-  ctx.globalAlpha = .45; ctx.drawImage(a, 0, 0); ctx.globalAlpha = .2; ctx.drawImage(b, 0, 0); ctx.globalAlpha = 1;
-  return tot ? 1 - miss / tot : null;
+  let cover = null;
+  if (mode !== 'points') {
+    const V = m.vertices, F = m.faces, n = V.length / 3;
+    if (!liveCache || liveCache.mesh !== m) liveCache = { mesh: m, px: new Float32Array(n * 2), pz: new Float32Array(n), a: document.createElement('canvas'), b: document.createElement('canvas') };
+    const { px, pz, a, b } = liveCache;
+    for (let i = 0; i < n; i++) { const q = project(pose, cam, [V[3 * i], V[3 * i + 1], V[3 * i + 2]]); px[2 * i] = q[0]; px[2 * i + 1] = q[1]; pz[i] = q[2]; }
+    a.width = b.width = w; a.height = b.height = h;
+    const tris = x => { x.beginPath(); for (let f = 0; f < F.length; f += 3) { const i = F[f], j = F[f + 1], k = F[f + 2]; if (pz[i] <= 0 || pz[j] <= 0 || pz[k] <= 0) continue; x.moveTo(px[2 * i], px[2 * i + 1]); x.lineTo(px[2 * j], px[2 * j + 1]); x.lineTo(px[2 * k], px[2 * k + 1]); x.closePath(); } x.fill(); };
+    const A = a.getContext('2d'); A.fillStyle = '#35e0a0'; tris(A);
+    const B = b.getContext('2d'); B.fillStyle = '#ff9a3d'; B.fillRect(ix, iy, rw, rh); B.globalCompositeOperation = 'destination-out'; B.fillStyle = '#000'; B.strokeStyle = '#000'; B.lineWidth = 2; tris(B); B.stroke(); B.globalCompositeOperation = 'source-over';
+    const sm = document.createElement('canvas'); sm.width = 96; sm.height = Math.max(1, Math.round(96 * h / w));
+    const sx = sm.getContext('2d', { willReadFrequently: true }); sx.drawImage(b, 0, 0, sm.width, sm.height);
+    const d = sx.getImageData(0, 0, sm.width, sm.height).data, x0 = Math.round(sm.width * (1 - roi) / 2), x1 = Math.round(sm.width * (1 + roi) / 2), y0 = Math.round(sm.height * (1 - roi) / 2), y1 = Math.round(sm.height * (1 + roi) / 2);
+    let tot = 0, miss = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { tot++; if (d[4 * (y * sm.width + x) + 3] > 100) miss++; }
+    ctx.globalAlpha = .45; ctx.drawImage(a, 0, 0); ctx.globalAlpha = .2; ctx.drawImage(b, 0, 0); ctx.globalAlpha = 1;
+    cover = tot ? 1 - miss / tot : null;
+  }
+  if (mode !== 'surface') {
+    const CX = 16, CY = 12, cells = new Uint16Array(CX * CY), pts = [], S = Math.max(2, w / 200);
+    for (const p of r.points) {
+      const q = project(pose, cam, p.xyz); if (q[2] <= 0) continue;
+      const X = q[0], Y = q[1]; if (X < 0 || Y < 0 || X >= w || Y >= h) continue;
+      pts.push(X, Y, q[2], p.color);
+      if (X >= ix && X < ix + rw && Y >= iy && Y < iy + rh) cells[Math.min(CY - 1, Math.floor((Y - iy) / rh * CY)) * CX + Math.min(CX - 1, Math.floor((X - ix) / rw * CX))]++;
+    }
+    let filled = 0; for (let k = 0; k < cells.length; k++) if (cells[k] >= 1) filled++;
+    if (mode === 'points') {
+      ctx.fillStyle = 'rgba(255,154,61,.16)';
+      for (let cy = 0; cy < CY; cy++) for (let cx = 0; cx < CX; cx++) if (!cells[cy * CX + cx]) ctx.fillRect(ix + cx * rw / CX, iy + cy * rh / CY, rw / CX, rh / CY);
+      cover = filled / (CX * CY);
+    }
+    // far points first so near ones stay on top; a dark halo keeps every colour readable on the live picture
+    const order = []; for (let k = 0; k < pts.length; k += 4) order.push(k); order.sort((a, b) => pts[b + 2] - pts[a + 2]);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; for (const k of order) ctx.fillRect(pts[k] - S, pts[k + 1] - S, 2 * S, 2 * S);
+    for (const k of order) { const c = pts[k + 3] || [255, 255, 255]; ctx.fillStyle = `rgb(${Math.min(255, c[0] * 1.15 + 20)},${Math.min(255, c[1] * 1.15 + 20)},${Math.min(255, c[2] * 1.15 + 20)})`; ctx.fillRect(pts[k] - S * .62, pts[k + 1] - S * .62, S * 1.24, S * 1.24); }
+  }
+  return cover;
 }
 
 export function drawRing(canvas, ring, current = null) {

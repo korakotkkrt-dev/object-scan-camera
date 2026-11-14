@@ -40,13 +40,13 @@ export class LiveLocator {
     const X = Float32Array.from(xyz);
     const wait = new Promise((resolve, reject) => this.wait.set('index', {resolve, reject}));
     this.loc.postMessage({kind: 'index', desc: D, xyz: X}, [D.buffer, X.buffer]);
-    await wait; this.ready = true; this.modelId++; return true;
+    await wait; this.ready = true; this.modelId++; this.modelGen = result.generatedAt; return true;   // modelGen: which build the index belongs to (every build has its own coordinates)
   }
   clearModel() { this.ready = false; this.points = 0; this.modelId++; }
   // one attempt on the current video picture; returns {ok, R, t, inliers, matches, ms, ...}
   async locate(source) {
     if (!this.ready) return {ok: false, reason: 'no-model'};
-    const modelId = this.modelId, cam = this.camera, t0 = performance.now();
+    const modelId = this.modelId, modelGen = this.modelGen, cam = this.camera, t0 = performance.now();
     const sc = this.liveScale, W = Math.round(cam.width * sc), H = Math.round(cam.height * sc);
     const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d', {willReadFrequently: true});
     ctx.drawImage(source, 0, 0, W, H);
@@ -61,7 +61,7 @@ export class LiveLocator {
     if (modelId !== this.modelId) return {ok: false, reason: 'model-changed'};
     const r = await this.call(this.loc, {kind: 'locate', desc: f.descriptors, kp: f.keypoints, count: f.count, camera: cam});
     if (modelId !== this.modelId) return {ok: false, reason: 'model-changed'};
-    return {...r, features: f.count, extractMs: Math.round(tf - t0), totalMs: Math.round(performance.now() - t0)};
+    return {...r, modelGen, features: f.count, extractMs: Math.round(tf - t0), totalMs: Math.round(performance.now() - t0)};
   }
   terminate() { this.sleep(); this.loc.terminate(); }
 }
