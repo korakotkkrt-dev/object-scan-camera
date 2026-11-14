@@ -1,23 +1,23 @@
 import {ReconstructionPipeline} from './pipeline.mjs';
-import {Viewer} from './viewer.mjs';
+import {Viewer} from './viewer.mjs';import {drawFrame,vertexCoverage,ringData,drawRing,camCenter} from './overlay.mjs';
 import {toPLY} from './stereo.mjs';
 import {makeFixture} from './fixture.mjs';
 import {mayStart,shouldRun,currentResult} from './state.mjs';
 import {zipSync,strToU8} from './vendor/fflate/browser.js';
 const $=id=>document.getElementById(id),video=$('video');
-const viewer=new Viewer($('view'));let pipeline=new ReconstructionPipeline(),frames=[],stream=null,capturing=false,busy=false,loading=false,opening=false,ready=false,calibrated=false,allowCompute=true,epoch=0,lastAttempt=0,result=null,metric=1,distance=null,abort=null,timer=null,frameSize=null,previous=null,source='camera';
+const viewer=new Viewer($('view'));let selFrame=0,ovModel=true,ring=null;let pipeline=new ReconstructionPipeline(),frames=[],stream=null,capturing=false,busy=false,loading=false,opening=false,ready=false,calibrated=false,allowCompute=true,epoch=0,lastAttempt=0,result=null,metric=1,distance=null,abort=null,timer=null,frameSize=null,previous=null,source='camera';
 const log=t=>{$('log').textContent=($('log').textContent+'\n'+t).slice(-16000);};
 const status=t=>{$('status').textContent=t;};
 function refresh(){const count=frames.length;$('count').textContent=`${count} / 32 ภาพ`;$('start').disabled=!mayStart({stream,capturing,count,loading,opening,source,ready});$('stop').disabled=!capturing;$('open').disabled=capturing||loading||opening||count>0;$('test').disabled=busy||loading||capturing||opening||!ready;$('files').disabled=busy||loading||capturing||opening||!ready;$('roi').disabled=busy||capturing||loading;$('photos').disabled=!count||loading;$('ply').disabled=!result?.mesh.faces.length;$('report').disabled=!result;$('measure').disabled=!result?.mesh.faces.length||busy||capturing;$('progress').hidden=!busy;$('retry').disabled=count<8||busy||loading||capturing;$('cancel').disabled=!busy;}
 async function confirmNew(message){if(!frames.length)return true;const dialog=$('confirm');$('confirmText').textContent=message;return new Promise(resolve=>{const close=value=>{dialog.close();dialog.oncancel=null;resolve(value);};$('confirmYes').onclick=()=>close(true);$('confirmNo').onclick=()=>close(false);dialog.oncancel=e=>{e.preventDefault();close(false);};dialog.showModal();});}
 function save(name,data,type='application/octet-stream'){const url=URL.createObjectURL(new Blob([data],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 async function canvasBlob(c){return new Promise((resolve,reject)=>c.toBlob(b=>b?resolve(b):reject(Error('บันทึกภาพไม่ได้')),'image/jpeg',.92));}
-function addFrame(blob,canvas){const name=`frame_${String(frames.length).padStart(4,'0')}.jpg`;frames.push({name,data:blob});const t=document.createElement('canvas');t.width=64;t.height=Math.round(64*canvas.height/canvas.width);t.getContext('2d').drawImage(canvas,0,0,t.width,t.height);const im=new Image();im.src=t.toDataURL('image/jpeg',.6);im.alt=`ภาพที่ ${frames.length}`;$('thumbs').append(im);refresh();}
+function addFrame(blob,canvas){const name=`frame_${String(frames.length).padStart(4,'0')}.jpg`;frames.push({name,data:blob});const t=document.createElement('canvas');t.width=64;t.height=Math.round(64*canvas.height/canvas.width);t.getContext('2d').drawImage(canvas,0,0,t.width,t.height);const im=new Image();im.src=t.toDataURL('image/jpeg',.6);im.alt=`ภาพที่ ${frames.length}`;im.dataset.i=frames.length-1;im.onclick=()=>showFrame(Number(im.dataset.i));$('thumbs').append(im);refresh();}
 function stopCapture(){capturing=false;clearTimeout(timer);timer=null;$('captureHint').textContent='หยุดเก็บภาพแล้ว ระบบจะประมวลผลภาพที่เหลือให้เสร็จ';refresh();schedule(true);}
-function reset(){epoch++;abort?.abort();abort=null;clearTimeout(timer);capturing=false;busy=false;loading=false;lastAttempt=0;frames=[];result=null;previous=null;metric=1;calibrated=false;allowCompute=true;distance=null;frameSize=null;source='camera';pipeline=new ReconstructionPipeline();$('thumbs').replaceChildren();$('empty').style.display='grid';$('stats').textContent='ยังไม่มีผลการสร้างโมเดล';$('revision').textContent='รอภาพ';$('error').textContent='';$('scaleInfo').textContent='ยังไม่มีสเกลอ้างอิง ระยะในโมเดลไม่ใช่เมตร';$('scale').disabled=true;viewer.set({mesh:{vertices:new Float32Array(),colors:new Uint8Array(),faces:new Uint32Array()},reconstruction:{points:[]}});status('พร้อมเก็บภาพชิ้นใหม่');refresh();}
+function reset(){epoch++;abort?.abort();abort=null;clearTimeout(timer);capturing=false;busy=false;loading=false;lastAttempt=0;frames=[];result=null;previous=null;metric=1;calibrated=false;allowCompute=true;distance=null;frameSize=null;source='camera';pipeline=new ReconstructionPipeline();$('thumbs').replaceChildren();ring=null;selFrame=0;clearOverlay();$('empty').style.display='grid';$('stats').textContent='ยังไม่มีผลการสร้างโมเดล';$('revision').textContent='รอภาพ';$('error').textContent='';$('scaleInfo').textContent='ยังไม่มีสเกลอ้างอิง ระยะในโมเดลไม่ใช่เมตร';$('scale').disabled=true;viewer.set({mesh:{vertices:new Float32Array(),colors:new Uint8Array(),faces:new Uint32Array()},reconstruction:{points:[]}});status('พร้อมเก็บภาพชิ้นใหม่');refresh();}
 async function schedule(force=false){if(!allowCompute||!shouldRun({busy,loading,count:frames.length,lastAttempt,force}))return;
  const token=epoch,snapshot=frames.slice(),engine=pipeline;lastAttempt=snapshot.length;busy=true;abort=new AbortController();const controller=abort;const timeout=setTimeout(()=>controller.abort(),300000);$('error').textContent='';refresh();
- try{const r=await engine.run(snapshot,{signal:controller.signal,roi:Number($('roi').value)/100,onProgress:t=>{if(token===epoch)status(t);},onLog:t=>{if(token===epoch)log(t);}});if(!currentResult(token,epoch))return;result={...r,source};metric=1;calibrated=false;distance=null;$('scale').disabled=true;$('scaleInfo').textContent='โมเดลรอบใหม่ — ยังไม่มีสเกลอ้างอิง ระยะไม่ใช่เมตร';viewer.set(r);$('empty').style.display='none';$('revision').textContent=`จาก ${r.frameCount} ภาพ`;$('stats').textContent=`จับคู่ ${r.registered}/${r.frameCount} มุม · ${r.reconstruction.points.length.toLocaleString()} จุด · ${r.mesh.stats.faces.toLocaleString()} สามเหลี่ยมผิว`;
+ try{const r=await engine.run(snapshot,{signal:controller.signal,roi:Number($('roi').value)/100,onProgress:t=>{if(token===epoch)status(t);},onLog:t=>{if(token===epoch)log(t);}});if(!currentResult(token,epoch))return;result={...r,source};metric=1;calibrated=false;distance=null;$('scale').disabled=true;$('scaleInfo').textContent='โมเดลรอบใหม่ — ยังไม่มีสเกลอ้างอิง ระยะไม่ใช่เมตร';viewer.set(r);afterResult(r);$('empty').style.display='none';$('revision').textContent=`จาก ${r.frameCount} ภาพ`;$('stats').textContent=`จับคู่ ${r.registered}/${r.frameCount} มุม · ${r.reconstruction.points.length.toLocaleString()} จุด · ${r.mesh.stats.faces.toLocaleString()} สามเหลี่ยมผิว`;
  if(r.mesh.stats.faces<20){viewer.setMode('points');$('error').textContent='สร้างจุด 3 มิติได้ แต่ผิวโมเดลยังไม่เพียงพอ ลองเปลี่ยนมุมเพิ่มโดยให้ภาพซ้อนกันมากขึ้น';status('ได้เฉพาะจุด 3 มิติ ยังไม่ใช่ผิวโมเดลที่พร้อมใช้งาน');}else{viewer.setMode('surface');status(`สร้างผิวโมเดลแล้วจาก ${r.frameCount} ภาพ${capturing?' — เก็บภาพต่อเพื่อเพิ่มมุมได้':''}`);}
  log(JSON.stringify({time:r.generatedAt,source,frames:r.frameCount,registered:r.registered,sparse:r.reconstruction.points.length,...r.mesh.stats}));
  }catch(e){if(token!==epoch)return;if(e.name==='AbortError')allowCompute=false;$('error').textContent=e.name==='AbortError'?'หยุดคำนวณแล้ว (หรือเกินเวลา 5 นาที) ภาพยังอยู่ สามารถลองคำนวณอีกครั้งหรือดาวน์โหลดเก็บไว้':e.message;status(result?'รอบใหม่ยังไม่สำเร็จ — แสดงโมเดลรอบก่อน':'ยังสร้างโมเดลไม่สำเร็จ');log(String(e));}
@@ -29,7 +29,7 @@ $('open').onclick=async()=>{if(opening||frames.length)return;opening=true;const 
 $('start').onclick=()=>{if(!mayStart({stream,capturing,count:frames.length,loading,opening,source,ready}))return;capturing=true;allowCompute=true;source='camera';refresh();capture();};$('stop').onclick=stopCapture;$('reset').onclick=async()=>{if(!await confirmNew('เริ่มชิ้นใหม่และล้างภาพในหน้านี้? ควรดาวน์โหลดงานเดิมก่อน'))return;reset();};
 $('retry').onclick=()=>{if(busy||capturing||loading||frames.length<8)return;lastAttempt=0;allowCompute=true;schedule(true);};$('cancel').onclick=()=>{allowCompute=false;capturing=false;clearTimeout(timer);abort?.abort();refresh();};
 $('roi').oninput=()=>{const v=Number($('roi').value);$('roiValue').textContent=`${v}%`;$('frame').style.inset=`${(100-v)/2}%`;if(result)status('ขอบเขตเปลี่ยนแล้ว กดคำนวณชุดภาพนี้อีกครั้งเพื่ออัปเดตโมเดล');};
-$('surface').onclick=()=>viewer.setMode('surface');$('points').onclick=()=>viewer.setMode('points');$('fit').onclick=()=>viewer.fit();
+$('surface').onclick=()=>viewer.setMode('surface');$('points').onclick=()=>viewer.setMode('points');$('fit').onclick=()=>viewer.fit();$('cover').onclick=()=>viewer.setMode('cover');$('ovPrev').onclick=()=>showFrame(selFrame-1);$('ovNext').onclick=()=>showFrame(selFrame+1);$('ovModel').onclick=()=>{ovModel=!ovModel;$('ovModel').textContent=ovModel?'ซ่อนโมเดล':'ทับด้วยโมเดล';showFrame(selFrame);};
 $('measure').onclick=()=>{viewer.clearSelection();viewer.setMode('surface');viewer.measure=true;$('scaleInfo').textContent='แตะ 2 จุดบนผิวโมเดลที่ทราบระยะจริง';};viewer.onDistance=d=>{distance=d;$('scale').disabled=!(d>0);$('scaleInfo').textContent='เลือกครบแล้ว ใส่ระยะจริงระหว่าง 2 จุด แล้วกดใช้ขนาดนี้';};
 $('scale').onclick=()=>{const value=Number($('length').value);if(!(distance>0&&value>0&&Number.isFinite(value)))return;metric=value/distance;calibrated=true;$('scaleInfo').textContent=`ตั้งสเกลจากระยะ ${value} เมตรแล้ว ใช้กับโมเดลรอบนี้เท่านั้น`;};
 $('ply').onclick=()=>{if(result?.mesh.faces.length)save('object-surface.ply',toPLY(result.mesh,metric,calibrated),'text/plain');};
@@ -39,3 +39,33 @@ $('files').onchange=async e=>{const input=Array.from(e.target.files).slice(0,32)
 $('test').onclick=async()=>{if(!await confirmNew('แทนภาพปัจจุบันด้วยภาพจำลองเพื่อทดสอบ?'))return;reset();source='synthetic-known-depth';loading=true;const token=epoch;refresh();status('กำลังสร้างภาพจำลองใหม่ 9 มุม');try{const fixture=makeFixture({width:480,height:360,count:9});for(const im of fixture.images){const c=document.createElement('canvas');c.width=im.width;c.height=im.height;c.getContext('2d').putImageData(new ImageData(im.data,im.width,im.height),0,0);const b=await canvasBlob(c);if(token!==epoch)return;addFrame(b,c);}}catch(e){if(token===epoch)$('error').textContent=e.message;}finally{if(token===epoch){loading=false;refresh();schedule(true);}}};
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&capturing)stopCapture();});window.addEventListener('pagehide',()=>{stream?.getTracks().forEach(t=>t.stop());abort?.abort();});
 try{if(!globalThis.Worker||!globalThis.WebAssembly||!globalThis.OffscreenCanvas)throw Error('เบราว์เซอร์ยังไม่รองรับการคำนวณนี้ กรุณาใช้ Safari หรือ Chrome รุ่นล่าสุด');ready=true;status('พร้อมสร้างโมเดล — เปิดกล้องหรือเลือกชุดภาพ');}catch(e){$('error').textContent=e.message;status('อุปกรณ์ยังไม่พร้อมคำนวณโมเดล');}refresh();
+
+function clearOverlay(){$('ovCard').hidden=true;$('ovInfo').textContent='';$('ringHint').textContent='';$('covInfo').textContent='';$('liveRing').hidden=true;drawRing($('ring'),null);}
+async function showFrame(i){
+ if(!frames.length)return;
+ selFrame=Math.max(0,Math.min(frames.length-1,i));
+ const token=epoch,bmp=await createImageBitmap(frames[selFrame].data);
+ if(token!==epoch){bmp.close();return;}
+ const r=result?.reconstruction,info=drawFrame($('ovCanvas'),bmp,result,selFrame,{roi:Number($('roi').value)/100,showModel:ovModel});
+ bmp.close();
+ [...$('thumbs').children].forEach((t,k)=>t.classList.toggle('sel',k===selFrame));
+ $('ovCard').hidden=false;
+ let msg=`ภาพที่ ${selFrame+1} / ${frames.length}`;
+ if(!result)msg+=' · ยังไม่มีผลคำนวณ';
+ else if(selFrame>=r.images.length)msg+=' · เก็บหลังรอบคำนวณล่าสุด ยังไม่ถูกนำมาใช้';
+ else if(!info.registered)msg+=' · ระบบจับคู่ภาพนี้ไม่ได้ จึงไม่ถูกใช้สร้างโมเดล ลองถ่ายซ้ำช่วงนี้ให้ซ้อนกับภาพข้างเคียงมากขึ้น';
+ else if(info.coverage!=null)msg+=ovModel?` · โมเดลครอบคลุม ${Math.round(info.coverage*100)}% ของกรอบวัตถุ`:' · ภาพเดิม';
+ $('ovInfo').textContent=msg;
+}
+function afterResult(r){
+ try{
+  ring=ringData(r);drawRing($('ring'),ring);drawRing($('liveRing'),ring);$('liveRing').hidden=!ring;
+  $('ringHint').textContent=ring?ring.hints.join(' · ')+' (0° = จุดเริ่มสแกน เพิ่มขึ้นตามทิศที่เดิน เหมาะกับการเดินรอบวัตถุ)':'ภาพที่จับคู่ได้ยังน้อยเกินกว่าจะสรุปว่ามุมไหนยังขาด';
+  const counts=vertexCoverage(r);
+  viewer.setCoverage(counts,r.reconstruction.images.filter(p=>p.registered).map(p=>camCenter(p)));
+  const n=counts.length||1,pc=k=>Math.round(100*counts.filter(v=>k===3?v>=3:v===k).length/n);
+  $('covInfo').textContent=counts.length?`ปุ่ม “ความครอบคลุม”: เขียว = เห็นจาก ≥3 ภาพ (${pc(3)}%) · ส้ม = 2 ภาพ (${pc(2)}%) · แดง = ภาพเดียว (${pc(1)}%) ยิ่งหลายภาพโมเดลยิ่งน่าเชื่อถือ`:'';
+  let last=0;r.reconstruction.images.forEach((p,k)=>{if(p.registered)last=k;});
+  showFrame(selFrame>0&&selFrame<r.reconstruction.images.length?selFrame:last);
+ }catch(e){log('overlay: '+e);}
+}
