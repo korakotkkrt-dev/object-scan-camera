@@ -122,10 +122,39 @@ export function ringData(result) {
   if (!low) hints.push('ยังไม่มีภาพมุมต่ำ (ลดกล้องให้ต่ำลง)');
   const lone = cams.filter(q => cells[Math.min(11, Math.floor(q.az / 30))].reduce((s, v) => s + v, 0) === 1).length;
   if (lone && !empty.length) hints.push('บางช่วงมีภาพเพียงภาพเดียว ถ่ายซ้ำช่วงนั้นอีกเล็กน้อย');
-  return { cams, cells, sectors, hints, spanOk: empty.length === 0 };
+  // where a camera position (model coordinates) lies on the same ring, for the live marker
+  const where = cc => { const d = [cc[0] - c[0], cc[1] - c[1], cc[2] - c[2]], L = Math.hypot(d[0], d[1], d[2]) || 1;
+    return { az: (((flip * (Math.atan2(dot(d, e2), dot(d, e1)) * 180 / Math.PI - a0)) % 360) + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, dot(d, U) / L))) * 180 / Math.PI }; };
+  return { cams, cells, sectors, hints, spanOk: empty.length === 0, where };
 }
 
-export function drawRing(canvas, ring) {
+// ---- the model drawn over the LIVE camera picture -----------------------------------------------------------------------------------------
+// canvas has the size the reconstruction used (camera.width x camera.height) and is laid over the <video> with the same object-fit, so both line up.
+// green = surface already in the model, orange = inside the object frame but not yet built -> walk there. Returns the share of the frame already built.
+let liveCache = null;
+export function drawLive(canvas, result, pose, { roi = .88 } = {}) {
+  const r = result.reconstruction, cam = r.camera, w = cam.width, h = cam.height;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, w, h);
+  if (!pose) return null;
+  const m = result.mesh, V = m.vertices, F = m.faces, n = V.length / 3;
+  if (!liveCache || liveCache.mesh !== m) liveCache = { mesh: m, px: new Float32Array(n * 2), pz: new Float32Array(n), a: document.createElement('canvas'), b: document.createElement('canvas') };
+  const { px, pz, a, b } = liveCache;
+  for (let i = 0; i < n; i++) { const q = project(pose, cam, [V[3 * i], V[3 * i + 1], V[3 * i + 2]]); px[2 * i] = q[0]; px[2 * i + 1] = q[1]; pz[i] = q[2]; }
+  a.width = b.width = w; a.height = b.height = h;
+  const tris = x => { x.beginPath(); for (let f = 0; f < F.length; f += 3) { const i = F[f], j = F[f + 1], k = F[f + 2]; if (pz[i] <= 0 || pz[j] <= 0 || pz[k] <= 0) continue; x.moveTo(px[2 * i], px[2 * i + 1]); x.lineTo(px[2 * j], px[2 * j + 1]); x.lineTo(px[2 * k], px[2 * k + 1]); x.closePath(); } x.fill(); };
+  const ix = w * (1 - roi) / 2, iy = h * (1 - roi) / 2, rw = w * roi, rh = h * roi;
+  const A = a.getContext('2d'); A.fillStyle = '#35e0a0'; tris(A);
+  const B = b.getContext('2d'); B.fillStyle = '#ff9a3d'; B.fillRect(ix, iy, rw, rh); B.globalCompositeOperation = 'destination-out'; B.fillStyle = '#000'; B.strokeStyle = '#000'; B.lineWidth = 2; tris(B); B.stroke(); B.globalCompositeOperation = 'source-over';
+  const sm = document.createElement('canvas'); sm.width = 96; sm.height = Math.max(1, Math.round(96 * h / w));
+  const sx = sm.getContext('2d', { willReadFrequently: true }); sx.drawImage(b, 0, 0, sm.width, sm.height);
+  const d = sx.getImageData(0, 0, sm.width, sm.height).data, x0 = Math.round(sm.width * (1 - roi) / 2), x1 = Math.round(sm.width * (1 + roi) / 2), y0 = Math.round(sm.height * (1 - roi) / 2), y1 = Math.round(sm.height * (1 + roi) / 2);
+  let tot = 0, miss = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { tot++; if (d[4 * (y * sm.width + x) + 3] > 100) miss++; }
+  ctx.globalAlpha = .45; ctx.drawImage(a, 0, 0); ctx.globalAlpha = .2; ctx.drawImage(b, 0, 0); ctx.globalAlpha = 1;
+  return tot ? 1 - miss / tot : null;
+}
+
+export function drawRing(canvas, ring, current = null) {
   const S = canvas.width, ctx = canvas.getContext('2d'), cx = S / 2, cy = S / 2, R = S / 2 - 12;
   ctx.clearRect(0, 0, S, S);
   if (!ring) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.font = `${S / 11}px system-ui`; ctx.textAlign = 'center'; ctx.fillText('รอผลคำนวณ', cx, cy); return; }
@@ -138,5 +167,6 @@ export function drawRing(canvas, ring) {
   }
   ctx.fillStyle = '#fff';
   for (const q of ring.cams) { const rr = R * (1 - Math.max(0, Math.min(90, q.el)) / 90), a = rad(q.az); ctx.beginPath(); ctx.arc(cx + rr * Math.cos(a), cy + rr * Math.sin(a), 2.4, 0, 7); ctx.fill(); }
+  if (current) { const rr = R * (1 - Math.max(0, Math.min(90, current.el)) / 90), a = rad(current.az), X = cx + rr * Math.cos(a), Y = cy + rr * Math.sin(a); ctx.lineWidth = 2.5; ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.35)'; ctx.beginPath(); ctx.arc(X, Y, S / 16, 0, 7); ctx.fill(); ctx.stroke(); }
   ctx.fillStyle = '#7fe7cb'; ctx.font = `bold ${Math.max(10, S / 14)}px system-ui`; ctx.textAlign = 'center'; ctx.fillText('เริ่ม', cx, 10);
 }
