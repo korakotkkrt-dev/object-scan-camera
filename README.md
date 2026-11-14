@@ -1,36 +1,19 @@
-# Object Scan 0.2 — กล้องภาพสี → ผิวโมเดลสามมิติ
+# SlopeScan 3D — mobile browser prototype
 
-หน้าเว็บสำหรับทดลองบน Safari/Chrome รุ่นล่าสุด ไม่ต้องใช้ Colab และไม่ต้องมี LiDAR ภาพประมวลผลบนอุปกรณ์ ไม่มีการอัปโหลดภาพหรือ telemetry
+Static HTTPS web prototype for live camera capture, OpenCV.js ORB feature matching, essential-matrix pose recovery, pairwise triangulation, and Three.js sparse point cloud preview. **No installation, gallery writes, uploads, or export.**
 
-เปิดกล้องหลัง → เริ่มสแกน → เดินรอบวัตถุช้า ๆ ระบบเริ่มคำนวณเมื่อมี 8 ภาพ และคำนวณรอบใหม่เมื่อมีเพิ่มอีก 4 ภาพ (สูงสุด 32 ภาพ/ชิ้น) กล้องยังเก็บภาพได้ระหว่าง worker คำนวณ โมเดลแสดงเป็นรอบ ไม่ใช่ 30 เฟรม/วินาที หยุดเก็บภาพแล้วระบบประมวลผลภาพที่เหลือต่อ
+## Honest limitations
 
-หมุน/ซูมดูโมเดลได้ เลือก 2 จุดบนผิวแล้วกรอกระยะจริงเพื่อตั้งสเกล ส่งออก PLY ที่มีสีและสามเหลี่ยมผิว หรือ ZIP ภาพเพื่อประมวลผลต่อใน WebODM ได้ หากรูปทรงรอบใหม่เปลี่ยนกรอบพิกัดจะต้องตั้งสเกลใหม่
+- **Not a Polycam replacement or global SLAM.** Each successful frame pair is triangulated independently; only the latest pair is displayed. There is no accumulated global map, loop closure, dense reconstruction, depth sensor, or metric scale.
+- OpenCV.js browser builds may differ in exposed APIs/signatures; test `findEssentialMat`, `recoverPose`, `triangulatePoints`, and `BFMatcher` on target Safari before considering this stable.
+- Requires HTTPS and a camera permission grant; uses public CDN scripts and internet connectivity.
+- Camera-only geometry is in arbitrary relative units. Never use for engineering measurement without calibration, scale control, and validation.
+- OpenCV and Three.js processing may be slow on older phones.
 
-## ข้อจำกัดที่ต้องทราบ
+## Deploy
 
-- กรอบภาพเป็นขอบเขตประมวลผล ไม่ใช่ segmentation อัตโนมัติ พื้นหลังภายในกรอบอาจติดมา
-- ยังไม่วัดระยะเมตรจากกล้องโดยตรง และไม่ใช่เครื่องสแกน LiDAR
-- ผิวอาศัยภาพหลายมุม ต้องมี parallax และลวดลาย ไม่เติมช่องว่างที่ไม่มีข้อมูล อาจเป็นผิวหลายชิ้นซ้อนกัน ยังไม่ใช่ watertight mesh
-- จำกัดภาพยาวสุด 480 px, ผิวคำนวณกว้าง 192 px เพื่อทดลองบนมือถือ รายละเอียดและความแม่นยำต่ำกว่า WebODM desktop
-- ยังไม่ได้ทดสอบกับกล้องจริงของ iPhone 14 หรือรับรองความแม่นยำสำหรับงานวัด/วิศวกรรม
-- ภาพอยู่ในหน่วยความจำของหน้าเว็บ ปิดหน้าอาจสูญหาย ควรดาวน์โหลดก่อน
+Replace the root files `index.html`, `style.css`, and `app.js` in the existing GitHub Pages repository. Configure Pages to serve the root of the default branch. Allow deployment to finish, then reload the HTTPS Pages URL.
 
-## การสร้างและการทดสอบ
+## Next engineering milestone
 
-ติดตั้ง dependencies ตาม package.json แล้ว `node build.mjs` และ `node serve.cjs` เปิด http://127.0.0.1:8790 การเผยแพร่ใช้เนื้อหาของ dist/ เท่านั้น ต้องเสิร์ฟผ่าน HTTPS เพื่อให้มือถือเปิดกล้องได้
-
-`node --test tests/*.test.mjs`
-
-ชุดภาพจริง QA: [Middlebury TempleRing](https://vision.middlebury.edu/mview/data/), frames 13–24. ไม่รวมภาพทดสอบในเว็บไซต์ที่เผยแพร่
-
-`node tests/real-image-qa.mjs 8` และ `node tests/real-image-qa.mjs 12` ตรวจ SIFT/GLOMAP WASM เดียวกับเว็บ + matcher/stereo JS เดียวกัน โดยทำงานตรงจากไฟล์ใน Node (ไม่ใช่การทดสอบ UI หรือกล้องมือถือ)
-
-## วิธีสร้างรูปทรง
-
-1. COLMAP SIFT ตรวจลักษณะร่วม จำกัดสูงสุด 900 จุดต่อภาพโดยกระจายตำแหน่ง
-2. จับคู่ SIFT ด้วย angular ratio และ reciprocal matching ใน worker
-3. COLMAP geometric verification และ GLOMAP คำนวณกล้องกับจุดสามมิติ โดยไม่ป้อน poses สำเร็จรูป
-4. คำนวณ depth จาก multiview plane sweep + normalized cross correlation ต้องสอดคล้องอย่างน้อยสองมุม
-5. ตรวจ depth/reprojection ย้อนกลับ และสร้างสามเหลี่ยมเฉพาะบริเวณที่มีข้อมูล ปฏิเสธขอบที่ระยะกระโดด
-
-ศึกษาหลักการจาก ODM/WebODM แต่ไม่ได้ฝังหรือดัดแปลงโค้ด WebODM ในเว็บนี้ เพราะ ODM เป็นงานประมวลผลเป็นชุดบนเครื่องประมวลผล ส่วนนี้ใช้ colmap-wasm (BSD-3-Clause), three.js และ fflate (MIT) พร้อม THIRD_PARTY_NOTICES.md
+Implement persistent feature tracks, calibrated intrinsics, multi-view camera registration, bundle adjustment, triangulation into a common coordinate frame, outlier rejection, and robust scale/GCP workflow. A server-side COLMAP/ODM pipeline is preferable for reliable dense reconstruction.
